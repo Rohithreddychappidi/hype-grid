@@ -48,8 +48,20 @@ class BybitClient {
   // ── Market ──────────────────────────────────────────────────────────────────
 
   async getPrice(symbol) {
-    const res = await this.http.get(`/v5/market/tickers?category=linear&symbol=${symbol}`);
-    return parseFloat(res.data.result.list[0]?.lastPrice || 0);
+    // Use plain axios WITHOUT auth headers — public endpoint.
+    // Bybit blocks signed requests from cloud IPs (Render, AWS, etc.) with 403.
+    const url = `${this.baseUrl}/v5/market/tickers?category=linear&symbol=${symbol}`;
+    try {
+      const res = await axios.get(url, {
+        timeout: 8000,
+        headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TradingBot/1.0)' },
+      });
+      return parseFloat(res.data.result.list[0]?.lastPrice || 0);
+    } catch (e) {
+      // Secondary attempt: strip auth and try again via base http (no headers)
+      const res = await axios.get(url, { timeout: 8000 });
+      return parseFloat(res.data.result.list[0]?.lastPrice || 0);
+    }
   }
 
   async getKlines(symbol, interval = '1', limit = 200) {

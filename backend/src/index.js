@@ -143,6 +143,16 @@ async function start() {
     console.log('');
 
     if (process.env.AUTO_START === 'true') {
+      console.log('[AutoStart] Waiting for first WS price tick before starting grid...');
+      // Give WS up to 12s to receive the first price tick — avoids REST 403 on cloud IPs
+      await new Promise((resolve) => {
+        const cached = wsManager.getPrice(SYMBOL);
+        if (cached) return resolve();
+        const timer = setTimeout(resolve, 12000);
+        wsManager.once('price', ({ symbol }) => {
+          if (symbol === SYMBOL) { clearTimeout(timer); resolve(); }
+        });
+      });
       console.log('[AutoStart] Starting grid automatically...');
       try {
         await gridEngine.start();

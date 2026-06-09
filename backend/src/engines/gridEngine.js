@@ -149,9 +149,9 @@ class GridEngine extends EventEmitter {
     await this._cancelAllOrders();
     this.gridLevels = [];
 
-    // Get current price
-    const price = centerPrice || wsManager.getPrice(this.symbol) || await bybitClient.getPrice(this.symbol);
-    if (!price) throw new Error('Cannot get price');
+    // Get current price — prefer WS cache, wait up to 10s for a tick, then REST as last resort
+    const price = centerPrice || await this._getReliablePrice();
+    if (!price) throw new Error('Cannot get price — WS not ready and REST blocked');
 
     // Calculate bounds using ATR or fixed %
     const suggested = marketAnalyzer.getSuggestedRange();
@@ -378,6 +378,45 @@ class GridEngine extends EventEmitter {
   // ═══════════════════════════════════════════════════════════════════
   // HELPERS
   // ═══════════════════════════════════════════════════════════════════
+
+  // ═══════════════════════════════════════════════════════════════════
+  // PRICE RESOLUTION (WS-first, avoids Bybit 403 on cloud IPs)
+  // ═══════════════════════════════════════════════════════════════════
+
+  async _getReliablePrice() {
+    // 1. Instant hit — WS already has a cached price
+    const cached = wsManager.getPrice(this.symbol);
+    if (cached) return cached;
+
+    // 2. Wait up to 10 s for the first WS ticker tick
+    console.log('[Grid] Waiting for WS price tick (up to 10s)...');
+    const wsPrice = await new Promise((resolve) => {
+      const timer = setTimeout(() => resolve(null), 10000);
+      const handler = ({ symbol, price }) => {
+        if (symbol === this.symbol) {
+          clearTimeout(timer);
+          wsManager.off('price', handler);
+          resolve(price);
+        }
+      };
+      wsManager.on('price', handler);
+    });
+    if (wsPrice) {
+      console.log(`[Grid] Got WS price: $${wsPrice}`);
+      return wsPrice;
+    }
+
+    // 3. Last resort — REST call (may 403 on Render free IPs, but we try)
+    console.warn('[Grid] WS price unavailable after 10s — attempting REST fallback (may fail on cloud IPs)');
+    try {
+      const restPrice = await bybitClient.getPrice(this.symbol);
+      if (restPrice) return restPrice;
+    } catch (e) {
+      console.error(`[Grid] REST getPrice failed: ${e.message}`);
+    }
+
+    return null;
+  }
 
   _calcQtyPerLevel(price, spacing) {
     const capitalPerLevel = this.config.capital / this.config.levels;
